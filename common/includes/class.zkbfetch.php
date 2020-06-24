@@ -56,7 +56,7 @@ class ZKBFetch
     public static $KILL_TIMESTAMP_OFFSET_DEFAULT = 2;
     
     /** @param int maximum number of cycles tried to fetch to get new kills before stopping as a safety measure */
-    public static $MAXIMUM_NUMBER_OF_CYCLES = 25;
+    public static $MAXIMUM_NUMBER_OF_CYCLES = 3;
     
     /** field for counting the number of kills fetched from CREST; we need to keep track for not running into PHP's time limit */
     protected static $NUMBER_OF_KILLS_FETCHED_FROM_CREST = 0;
@@ -137,7 +137,9 @@ class ZKBFetch
         $fetchParams->prepare('INSERT INTO kb3_zkbfetch (`url`, `lastKillTimestamp`) VALUES (?, ?)');
         $types = 'ss';
         $timeString = strftime('%Y-%m-%d %H:00', $this->lastKillTimestamp);
-        $arr2 = array(&$types, &$this->url, &$timeString);
+
+	$arr2 = array(&$types, &$this->url, &$timeString);
+
         $fetchParams->bind_params($arr2);
 
         if(!$fetchParams->execute())
@@ -183,6 +185,7 @@ class ZKBFetch
     
     public function setUrl($url)
     {
+	
         $this->url = $url;
         
         if(is_null($this->id))
@@ -193,7 +196,12 @@ class ZKBFetch
         $updateParams = new DBPreparedQuery();
         $updateParams->prepare('UPDATE kb3_zkbfetch SET url = ? WHERE fetchID = ?');
         $types = 'si';
-        $arr = array(&$types, &$this->url, &$this->id);
+        if ($this->pageNumber > 1) {
+            $arr = array(&$types, &$this->fetchUrl, &$this->id);
+        } else {
+            $arr = array(&$types, &$this->url, &$this->id);
+        }
+
         $updateParams->bind_params($arr);
         if(!$updateParams->execute())
         {
@@ -220,11 +228,11 @@ class ZKBFetch
     
     public function getLastKillTimestamp()
     {
+	
         if(!is_null($this->id) && is_null($this->lastKillTimestamp))
         {
             $this->execQuery();
         }
-        
         return $this->lastKillTimestamp;
     }
     
@@ -280,7 +288,8 @@ class ZKBFetch
     public function setKillTimestampOffset($killTimestampOffset)
     {
         if(is_numeric($killTimestampOffset))
-        {
+	{
+	    
             $this->killTimestampOffset = $killTimestampOffset;
         }
     }
@@ -293,7 +302,8 @@ class ZKBFetch
     public function fetch()
     {
         if (!$this->fetchUrl) 
-        {
+	{
+	    	
             return false;
         }
         
@@ -311,6 +321,7 @@ class ZKBFetch
             // since the orderDirection modifier is no longer supported,
             // we need to reverse the order of the results for our algorithms to work properly
             $this->rawData = array_reverse($this->rawData);
+	    $this->setUrl($this->fetchUrl);
         }
         
         // if a zKBFetchException is thrown, simply re-throw it
@@ -328,6 +339,32 @@ class ZKBFetch
     
     
     /**
+     * clean parameters from api url
+     * transform URL for zKB API
+     */
+    protected function sanitizeFetchUrl() {
+        // zkb api doesnt support anymore
+        str_replace('xml/', '', $this->fetchUrl);
+	$this->fetchUrl = preg_replace("/\/startTime\/[0-9]*/i", "", $this->fetchUrl);
+	$this->fetchUrl = preg_replace("/\/endTime\/[0-9]*/i", "", $this->fetchUrl);
+	$this->fetchUrl = preg_replace("/\/limit\/[0-9]*/i", "", $this->fetchUrl);
+	
+        // clean fields
+        $this->fetchUrl = preg_replace("/\/year\/[0-9]*/i", "", $this->fetchUrl);
+	$this->fetchUrl = preg_replace("/\/month\/[0-9]*/i", "", $this->fetchUrl);
+	$this->fetchUrl = preg_replace("/\/page\/[0-9]*/i", "", $this->fetchUrl);
+	$this->fetchUrl = preg_replace("/\/pastSeconds\/[0-9]*/i", "", $this->fetchUrl);
+
+        // must end with a slash
+        if(substr($this->fetchUrl, -1) != '/')
+        {
+            $this->fetchUrl .= '/';
+        }
+
+    }
+
+
+    /**
      * executes verifications on $url to ensure
      * it's a valid URL for zKB API
      * @throws ZKBFetchException
@@ -335,40 +372,39 @@ class ZKBFetch
     protected function validateUrl()
     {
         $this->fetchUrl = $this->url;
-        // remove XML modifier, we need JSON
-        str_replace('xml/', '', $this->fetchUrl);
-        // must end with a slash
-        if(substr($this->fetchUrl, -1) != '/')
-        {
-            $this->fetchUrl .= '/';
-        }
-        
-        // remove any user-input startTime
-        $this->fetchUrl = preg_replace("/\/startTime\/[0-9]*/i", "", $this->fetchUrl);
-        
+
+        // check last pageNumber
+	$pageNumber = 1;
+        preg_match('/page\/(?<pageNumber>\d+)/', $this->fetchUrl, $matches);
+        if ($matches) {
+            $pageNumber = (int) $matches["pageNumber"];
+	}
+	if ($pageNumber > $this->pageNumber ) {
+            $this->pageNumber = (int) $matches["pageNumber"];
+	}
+
+        $this->sanitizeFetchUrl();
+
         // add startTime, if given and the URL is not for a specific kill
         if(!is_null($this->startTimestamp) && strlen(trim($this->startTimestamp) > 0)
-                && strpos($this->fetchUrl, 'killID') === FALSE)
-        {
-            // sanity check for start timestamp
-            // timestamp before 2007 don't make sense
+                && strpos($this->fetchUrl, 'killID') === FALSE) {
+
             self::checkTimestamp($this->startTimestamp);
-            $timestampFormattedForZkb = strftime("%Y%m%d%H00", $this->startTimestamp);
-            $this->fetchUrl .= "startTime/$timestampFormattedForZkb/";
-        }
-        
-        // the orderDirection modifier is no longer supported - 
-        // results will be ordered by kill ID descending!
-        
-        $this->fetchUrl .= "page/$this->pageNumber/";
-        if(!is_null($this->endTimestamp))
-        {
-        	$endTimestampFormattedForZkb = strftime("%Y%m%d%H00", $this->endTimestamp);
-        	$this->fetchUrl .= "endTime/$endTimestampFormattedForZkb/";
+			
+	    $pastSeconds = time() - $this->startTimestamp;
+	    $pastSeconds = (intval($pastSeconds / 3600) + 1) * 3600;
+
+	    if ($pastSeconds =< 604800) {
+		$this->fetchUrl .= "pastSeconds/$pastSeconds/";
+	    } else {
+		$year = strftime("%Y", $this->startTimestamp);
+		$month = strftime("%m", $this->startTimestamp);
+		$this->fetchUrl .= "year/$year/month/$month/";
+                $this->fetchUrl .= "page/$this->pageNumber/";
+	    }
         }
 
         $urlPieces = explode("/", $this->fetchUrl);
-
         if(count($urlPieces) < 5 || $urlPieces[3] != "api")
         {
             throw new ZKBFetchException("Invalid zBK API URL: ".$this->fetchUrl);
@@ -388,36 +424,32 @@ class ZKBFetch
         // remember the timestamp we started with
         $this->startTimestamp = $this->lastKillTimestamp - ($this->lastKillTimestamp % 3600);
 
-       // var_dump($this->startTimestamp); var_dump($this->lastKillTimestamp); var_dump($this->lastKillTimestamp % 3600); die();
-        EDKError::log(" start timestamp = ".strftime("%Y-%m-%d %H:%M:%S", $this->startTimestamp));
         // calculate the timestamp of the next full hour, starting at the time of the last kill;
         // this is the timestamp we want to reach at least
         if($this->startTimestamp)
         {
             $nextFullHourTimestamp = $this->startTimestamp+1 + (3600 - (($this->startTimestamp+1) % 3600));
         }
-        EDKError::log(" next full hour timestamp = ".strftime("%Y-%m-%d %H:%M:%S", $nextFullHourTimestamp));
+
         // apply negative offset
         if(isset($this->killTimestampOffset) && is_numeric($this->killTimestampOffset) && isset($this->startTimestamp) && is_numeric($this->startTimestamp))
         {
             $this->startTimestamp -= $this->killTimestampOffset*3600;
         }
         
-        // the zKB API now requires endTimestamp to be set if startTimestamp is used
-        // The endTimestamp must be set AFTER the negative kill timestamp offset has been applied to the startTimestamp!
-		$this->endTimestamp = $this->startTimestamp + 86400;
-        
         // initialize fetch counter
         $cyclesFetched = 0;
         
         $fetchUrlPreviousCycle = '';
+
         // we need this loop to keep fetching until we don't get any data (because there is no new data)
         // or we get data containing a kill with a timestamp newer than the timestamp we started with
         do
-        {
+	{
             // validate and build the URL
             $this->validateUrl();
-            EDKError::log(" fetch url = ". $this->fetchUrl);
+
+            EDKError::log("fetch url = ". $this->fetchUrl);
             // check if the fetch URL is the same as for the last cycle
             if($fetchUrlPreviousCycle == $this->fetchUrl)
             {
@@ -429,14 +461,18 @@ class ZKBFetch
             // fetch the raw data from zKB API
             try
             {
+                
+                EDKError::log("get content from url = ". $this->fetchUrl);
                 $this->fetch();
+                $this->url =  $this->fetchUrl;
             }
-            
             catch(Exception $e)
             {
-                $this->lastKillTimestamp = $startTimestamp;
-                throw $e;
+                //$this->lastKillTimestamp = $startTimestamp;
+                //throw $e;
+		break;
             }
+
             if(empty($this->rawData))
             {
                 //throw new ZKBFetchException("Empty result returned by API ".$this->fetchUrl);
@@ -445,76 +481,101 @@ class ZKBFetch
                 $this->rawData = array();
             }
             
-            $maxNumberOfKillsPerRun = config::get('maxNumberOfKillsPerRun');
+            //$maxNumberOfKillsPerRun = config::get('maxNumberOfKillsPerRun'); 
+            $maxNumberOfKillsPerRun = 200;
 
             // add kills to accumulated number of kills fetched from zKB
             $this->numberOfKillsFetched += count($this->rawData);
         
             // loop over all kills
             foreach($this->rawData AS $killData)
-            {
-                // check if we reached the maximum number of kills we may fetch
-                if(self::$NUMBER_OF_KILLS_FETCHED_FROM_CREST >= $maxNumberOfKillsPerRun)
-                {
-                    break 2;
-                }
-                
+	    {
                 try
                 {
                     $this->processKill($killData);
                 }
-
                 catch(ZKBFetchException $e)
                 {
                     $this->parsemsg[] = $e->getMessage();
                 }
-                
                 catch(ApiException $e)
                 {
                     $this->parsemsg[] = "Error communicating with ESI, aborting!";
                     $this->parsemsg[] = $e->getMessage();
                     break;
                 }
-                if(!is_null($this->lastKillTimestamp))
-                {
-                    $this->setLastKillTimestamp($this->lastKillTimestamp);
-                    //EDKError::log("set lastKillTimestamp = ".strftime("%Y-%m-%d %H:%M:%S", $this->lastKillTimestamp));
-                }
             }
-            EDKError::log(" lastKillTimestamp = ".strftime("%Y-%m-%d %H:%M:%S", $this->lastKillTimestamp));
+
             // no timestamp given at all
             if($this->startTimestamp == NULL || $nextFullHourTimestamp == NULL)
             {
                 break;
             }
             
-            // safety stop
+            // a large number in get external api's 
             if($cyclesFetched >= self::$MAXIMUM_NUMBER_OF_CYCLES)
             {
-                $this->parsemsg[] = "Stopped fetching before finding new kills due to safety limit (fetched ".($this->numberOfKillsFetched)." kills in a row!). "
-                        . "Try lowering your negative kill timestamp offset!";
+                $this->parsemsg[] = "Stopped fetching maximum number of cycles (" . $cyclesFetched .") reached (with fetched ".($this->numberOfKillsFetched)." kills"
                 break;
             }
-            
+			
+
+            // increment do/while runs			
             $cyclesFetched++;
+
+	    // increment page number
             $this->pageNumber++;
+
             // remember the URL we used during this cycle
             $fetchUrlPreviousCycle = $this->fetchUrl;
-        }  while(count($this->rawData) > 0 && $this->lastKillTimestamp <= $nextFullHourTimestamp);
+
+	    $chronologicalLastKillTimestamp = $this->lastKillTimestamp;
+
+            // number of killmails processed
+	    $count_kills = count($this->rawData);
+
+            // maxNumberOfKillsPerRun
+            //if ($count_kills >= 200) {
+		// increment page number
+                //$this->pageNumber++;
+            //}
+	   
+	} while($count_kills >= 200);
         
+
         EDKError::log(" lastKillTimestamp = ".strftime("%Y-%m-%d %H:%M:%S", $this->lastKillTimestamp));
         EDKError::log(" # kills in last fetch = ".count($this->rawData));
+
         if($this->lastKillTimestamp <= $nextFullHourTimestamp) $bool = 'true'; else $bool = 'false';
         EDKError::log(strftime("%Y-%m-%d %H:%M:%S", $this->lastKillTimestamp)." <= ".strftime("%Y-%m-%d %H:%M:%S", $nextFullHourTimestamp)."=".$bool);
 
         // we did not get any new data, but technically should continue fetching --> advance the last kill timestamp one day
-        if(count($this->rawData) == 0 && $this->lastKillTimestamp <= $nextFullHourTimestamp && time() > $this->startTimestamp + 86400)
+        //if(count($this->rawData) == 0 && $this->lastKillTimestamp <= $nextFullHourTimestamp && time() > $this->startTimestamp + 86400)
+	if($cyclesFetched == 0)
         {
         	// advance
-        	$this->setLastKillTimestamp($this->startTimestamp + 86400);
-        	EDKError::log("setting last kill timestamp to ".strftime("%Y-%m-%d %H:%M:%S", $this->startTimestamp + 86400));
+        	$this->setLastKillTimestamp($this->startTimestamp + 21600);
         }
-        
+	else
+	{
+	// $this->fetchUrl contains /year/Y/month/m/
+	    if (strpos($fetchUrlPreviousCycle, "year") !== false && strpos($fetchUrlPreviousCycle, "month") !== false)
+		{
+			// all kills fetched from a previous month -> setLastKillTimestamp to the next month and first day
+			if (date('m', $chronologicalLastKillTimestamp) != date('m', time()))
+			{
+				$chronologicalLastKillTimestamp = strtotime('first day of ' . strftime("%Y-%m-%d 12:00:00", $chronologicalLastKillTimestamp) . " +1 months");
+				// change url for get next month
+				if ($count_kills < 200) {
+				    $this->sanitizeFetchUrl();		
+				    $this->setUrl($this->fetchUrl);
+				}
+			}
+
+		}
+		// chronologically last fetched kill Timestamp
+		$this->setLastKillTimestamp($chronologicalLastKillTimestamp);
+	}
     }
     
     
@@ -545,11 +606,13 @@ class ZKBFetch
       
         
         // Check for duplicate by external ID
-        $qry->execute('SELECT kll_id FROM kb3_kills WHERE kll_external_id = '.$killData->killmail_id);
+        $qry->execute('SELECT kll_id, kll_timestamp FROM kb3_kills WHERE kll_external_id = '.$killData->killmail_id);
         if($qry->recordCount())
         {
             // kill is already known
             $this->skipped[] = $killData->killmail_id;
+			$result = $qry->getRow();
+			$this->lastKillTimestamp = strtotime($result['kll_timestamp']);
             return;
         }
 
@@ -603,6 +666,7 @@ class ZKBFetch
         
         catch(ApiException $e)
         {
+            
             // ESI error due to incorrect ESI hash
             if($e->getCode() == 422 && config::get('skipNonVerifyableKills'))
             {
@@ -624,6 +688,7 @@ class ZKBFetch
         
         if($killId > 0)
         {
+
             self::$NUMBER_OF_KILLS_FETCHED_FROM_CREST++;
             $this->posted[] = $killData->killmail_id;
             $logaddress = "ZKB:".$this->url;
@@ -633,6 +698,7 @@ class ZKBFetch
                 $logaddress = substr($logaddress, 0, $baseUrlEndIndex);
                 $logaddress .= "kill/$killData->killmail_id/";
             }
+	    $this->setLastKillTimestamp($this->lastKillTimestamp);
             logger::logKill($killId, $logaddress);
         }
         
@@ -641,7 +707,6 @@ class ZKBFetch
         {
             $this->skipped[] = $killData->killmail_id;
         }
-
     }
    
    /**
@@ -695,5 +760,29 @@ class ZKBFetch
             throw new ZKBFetchException("You must use a timestamp starting 2007 or newer!");
         }
    }
+   /**
+    * Prints the given logText, prefixing it with a GMT timestamp
+    * and adding a newline at the end. Also replaces HTML line breaks
+    * with the appropriate ones and strips HTML tags from the logText.
+    * @param string $logText the text to log
+    */
+   function logDebug($logText)
+   {
+	    // determine correct line break for this environment
+	    $linebreak = "<br/>";
+	    if(defined('STDIN'))
+	    {
+		$linebreak = PHP_EOL;
+	    }
+	    // create GMT timestamp
+	    $timestamp = gmdate("Y/m/d H:i:s");
+	    // convert any HTML linebreaks to appropriate linebreaks
+	    $logText = preg_replace('/<br(\s)*(\/)?>/', PHP_EOL, $logText);
+	    $logText = str_replace("</div>","</div>".PHP_EOL, $logText);
+	    // strip any remaining HTML tags
+	    $logText = strip_tags($logText);
+	    $logText = str_replace(PHP_EOL, $linebreak, $logText);
 
+	    print $timestamp.' - '.$logText.$linebreak;
+   }
 }
