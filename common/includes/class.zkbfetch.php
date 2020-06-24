@@ -394,7 +394,7 @@ class ZKBFetch
 	    $pastSeconds = time() - $this->startTimestamp;
 	    $pastSeconds = (intval($pastSeconds / 3600) + 1) * 3600;
 
-	    if ($pastSeconds =< 604800) {
+	    if ($pastSeconds < 604800) {
 		$this->fetchUrl .= "pastSeconds/$pastSeconds/";
 	    } else {
 		$year = strftime("%Y", $this->startTimestamp);
@@ -515,7 +515,7 @@ class ZKBFetch
             // a large number in get external api's 
             if($cyclesFetched >= self::$MAXIMUM_NUMBER_OF_CYCLES)
             {
-                $this->parsemsg[] = "Stopped fetching maximum number of cycles (" . $cyclesFetched .") reached (with fetched ".($this->numberOfKillsFetched)." kills"
+                $this->parsemsg[] = "Stopped fetching maximum number of cycles (" . $cyclesFetched .") reached (with fetched ".($this->numberOfKillsFetched)." kills ";
                 break;
             }
 			
