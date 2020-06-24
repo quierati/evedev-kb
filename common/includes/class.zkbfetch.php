@@ -56,7 +56,7 @@ class ZKBFetch
     public static $KILL_TIMESTAMP_OFFSET_DEFAULT = 2;
     
     /** @param int maximum number of cycles tried to fetch to get new kills before stopping as a safety measure */
-    public static $MAXIMUM_NUMBER_OF_CYCLES = 3;
+    public static $MAXIMUM_NUMBER_OF_CYCLES = 10;
     
     /** field for counting the number of kills fetched from CREST; we need to keep track for not running into PHP's time limit */
     protected static $NUMBER_OF_KILLS_FETCHED_FROM_CREST = 0;
@@ -449,6 +449,7 @@ class ZKBFetch
             // validate and build the URL
             $this->validateUrl();
 
+            $this->logDebug("PROCCESSING URL: " . $this->fetchUrl);
             EDKError::log("fetch url = ". $this->fetchUrl);
             // check if the fetch URL is the same as for the last cycle
             if($fetchUrlPreviousCycle == $this->fetchUrl)
@@ -567,6 +568,7 @@ class ZKBFetch
 				$chronologicalLastKillTimestamp = strtotime('first day of ' . strftime("%Y-%m-%d 12:00:00", $chronologicalLastKillTimestamp) . " +1 months");
 				// change url for get next month
 				if ($count_kills < 200) {
+				    $this->logDebug("FINISHED MONTH:" . $chronologicalLastKillTimestamp);
 				    $this->sanitizeFetchUrl();		
 				    $this->setUrl($this->fetchUrl);
 				}
